@@ -1,0 +1,7 @@
+[package]
+name = "bevy_scene_postprocess"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { version = "0.14.1", default-features = false, features = ["bevy_scene", "bevy_asset"] }
