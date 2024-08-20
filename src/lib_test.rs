@@ -9,7 +9,8 @@ use bevy::{
 use googletest::prelude::*;
 
 use crate::{
-  ScenePostProcessPlugin, ScenePostProcessTasks, ScenePostProcessor,
+  ScenePostProcessIntermediate, ScenePostProcessPlugin, ScenePostProcessTasks,
+  ScenePostProcessor,
 };
 
 fn create_app() -> App {
@@ -191,4 +192,50 @@ fn multiple_asset_events_only_results_in_one_change() {
 
   // Tick the task pool to clear out the task.
   task_pool.with_local_executor(|exec| exec.try_tick());
+}
+
+#[googletest::test]
+fn drops_post_process_on_drop_output() {
+  let mut app = create_app();
+  let task_pool = AsyncComputeTaskPool::get_or_init(|| TaskPool::new());
+
+  let mut scenes = get_scenes_mut(&mut app);
+
+  // Keep the scene alive even though we don't use it any longer.
+  let processed_scene = {
+    let scene_to_process = scenes.add(Scene { world: World::new() });
+    app.world_mut().run_system_once(
+      move |mut post_processor: ScenePostProcessor| {
+        post_processor.process(
+          scene_to_process.clone(),
+          vec![Arc::new(spawn_entity_with_marker_action)],
+        )
+      },
+    )
+  };
+
+  // Update once to kickoff the processing.
+  app.update();
+  // Tick the task pool to finish its computation.
+  task_pool.with_local_executor(|exec| exec.try_tick());
+  // Update again to finish the processing.
+  app.update();
+
+  drop(processed_scene);
+
+  app.update();
+  app.update();
+
+  let scenes = get_scenes(&mut app);
+  // All the scenes were dropped.
+  expect_eq!(scenes.len(), 0);
+  expect_eq!(
+    app
+      .world()
+      .resource::<ScenePostProcessIntermediate>()
+      .original_to_post_process
+      .len(),
+    0
+  );
+  expect_eq!(get_post_process_tasks(&app), 0);
 }
