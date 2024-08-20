@@ -1,7 +1,126 @@
-use bevy::app::Plugin;
+use std::sync::Arc;
+
+use bevy::{
+  app::{Plugin, Update},
+  asset::{AssetEvent, AssetId, Assets, Handle},
+  prelude::{AppTypeRegistry, EventReader, Res, ResMut, Resource, World},
+  scene::Scene,
+  tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task},
+  utils::HashMap,
+};
 
 pub struct ScenePostProcessPlugin;
 
 impl Plugin for ScenePostProcessPlugin {
-  fn build(&self, _app: &mut bevy::prelude::App) {}
+  fn build(&self, app: &mut bevy::prelude::App) {
+    app
+      .add_systems(Update, watch_for_changed_original)
+      .add_systems(Update, handle_finished_processing);
+  }
+}
+
+#[derive(Resource)]
+struct ScenePostProcessIntermediate {
+  original_to_post_process: HashMap<AssetId<Scene>, PostProcessAction>,
+}
+
+struct PostProcessAction {
+  original_handle: Handle<Scene>,
+  output_handle: Handle<Scene>,
+  actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
+}
+
+#[derive(Resource)]
+struct ScenePostProcessTasks(HashMap<AssetId<Scene>, Task<Scene>>);
+
+fn watch_for_changed_original(
+  mut scene_events: EventReader<AssetEvent<Scene>>,
+  intermediate: Res<ScenePostProcessIntermediate>,
+  type_registry: Res<AppTypeRegistry>,
+  mut scenes: ResMut<Assets<Scene>>,
+  mut post_process_tasks: ResMut<ScenePostProcessTasks>,
+) {
+  for scene_event in scene_events.read() {
+    enum Change {
+      Added,
+      Modified,
+      Removed,
+    }
+    let (id, change) = match scene_event {
+      AssetEvent::Added { id } => (*id, Change::Added),
+      AssetEvent::Modified { id } => (*id, Change::Modified),
+      AssetEvent::Removed { id } => (*id, Change::Removed),
+      // Not possible for the scenes we care about, since we hold a strong
+      // handle to them.
+      AssetEvent::Unused { .. } => continue,
+      // We don't care.
+      AssetEvent::LoadedWithDependencies { .. } => continue,
+    };
+
+    let Some(post_process_action) =
+      intermediate.original_to_post_process.get(&id)
+    else {
+      // This is not a scene we care about.
+      continue;
+    };
+
+    if let Change::Removed = change {
+      // If the original scene was removed, we should also remove the output
+      // scene so they remain consistent.
+      scenes.remove(&post_process_action.output_handle);
+      post_process_tasks.0.remove(&id);
+      continue;
+    }
+
+    let Some(original_scene) = scenes.get(&post_process_action.original_handle)
+    else {
+      // This could happen if the original scene is loaded and unloaded in the
+      // same frame. I'm not sure this is possible, but it's fine if this
+      // happens anyway.
+      continue;
+    };
+
+    let Ok(cloned_scene) = original_scene.clone_with(&type_registry) else {
+      // TODO: Emit an event here to notify of errors.
+      continue;
+    };
+
+    let async_actions = post_process_action.actions.clone();
+
+    let task_pool = AsyncComputeTaskPool::get();
+    let task = task_pool.spawn(async move {
+      let mut processed_scene = cloned_scene;
+      for action in async_actions {
+        action(&mut processed_scene.world);
+      }
+      processed_scene
+    });
+    post_process_tasks.0.insert(id, task);
+  }
+}
+
+fn handle_finished_processing(
+  mut post_process_tasks: ResMut<ScenePostProcessTasks>,
+  intermediate: Res<ScenePostProcessIntermediate>,
+  mut scenes: ResMut<Assets<Scene>>,
+) {
+  post_process_tasks.0.retain(|id, task| {
+    if !task.is_finished() {
+      return true;
+    }
+
+    let processed_scene =
+      block_on(future::poll_once(task)).expect("the task is finished");
+
+    let Some(post_process_action) =
+      intermediate.original_to_post_process.get(id)
+    else {
+      // The conversion must have been deleted, so just ignore this as spurious.
+      return false;
+    };
+
+    scenes.insert(&post_process_action.output_handle, processed_scene);
+
+    false
+  });
 }
