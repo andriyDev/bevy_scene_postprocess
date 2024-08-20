@@ -10,7 +10,7 @@ use bevy::{
   },
   scene::Scene,
   tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task},
-  utils::HashMap,
+  utils::{HashMap, HashSet},
 };
 
 pub struct ScenePostProcessPlugin;
@@ -50,6 +50,10 @@ impl<'w> ScenePostProcessor<'w> {
       unreachable!("reserve_handle always returns a Handle::Strong");
     };
 
+    if self.scenes.contains(&scene) {
+      self.intermediate.new_scenes.insert(scene.id());
+    }
+
     self.intermediate.original_to_post_process.insert(
       scene.id(),
       PostProcessAction {
@@ -58,7 +62,6 @@ impl<'w> ScenePostProcessor<'w> {
         actions,
       },
     );
-    // TODO: Make sure already loaded scenes are processed immediately.
 
     output_handle
   }
@@ -67,6 +70,7 @@ impl<'w> ScenePostProcessor<'w> {
 #[derive(Resource, Default)]
 struct ScenePostProcessIntermediate {
   original_to_post_process: HashMap<AssetId<Scene>, PostProcessAction>,
+  new_scenes: HashSet<AssetId<Scene>>,
 }
 
 struct PostProcessAction {
@@ -97,27 +101,21 @@ fn drop_unused_scenes(
 
 fn watch_for_changed_original(
   mut scene_events: EventReader<AssetEvent<Scene>>,
-  intermediate: Res<ScenePostProcessIntermediate>,
+  mut intermediate: ResMut<ScenePostProcessIntermediate>,
   type_registry: Res<AppTypeRegistry>,
   mut scenes: ResMut<Assets<Scene>>,
   mut post_process_tasks: ResMut<ScenePostProcessTasks>,
 ) {
-  for scene_event in scene_events.read() {
-    enum Change {
-      Added,
-      Modified,
-      Removed,
-    }
-    let (original_id, change) = match scene_event {
-      AssetEvent::Added { id } => (*id, Change::Added),
-      AssetEvent::Modified { id } => (*id, Change::Modified),
-      AssetEvent::Removed { id } => (*id, Change::Removed),
-      // Not possible for the scenes we care about, since we hold a strong
-      // handle to them.
-      AssetEvent::Unused { .. } => continue,
-      // We don't care.
-      AssetEvent::LoadedWithDependencies { .. } => continue,
-    };
+  let intermediate = intermediate.as_mut();
+  for (original_id, change) in
+    scene_events.read().filter_map(asset_event_to_change).chain(
+      intermediate
+        .new_scenes
+        .drain()
+        .map(|original_id| (original_id, Change::Reprocess)),
+    )
+  {
+    // TODO: Skip post processing the same asset multiple times in one frame.
 
     let Some(post_process_action) =
       intermediate.original_to_post_process.get(&original_id)
@@ -126,7 +124,7 @@ fn watch_for_changed_original(
       continue;
     };
 
-    if let Change::Removed = change {
+    if let Change::Remove = change {
       // If the original scene was removed, we should also remove the output
       // scene so they remain consistent.
       if let Some(strong_handle) = post_process_action.output_handle.upgrade() {
@@ -164,6 +162,26 @@ fn watch_for_changed_original(
       processed_scene
     });
     post_process_tasks.0.insert(original_id, task);
+  }
+}
+
+enum Change {
+  Reprocess,
+  Remove,
+}
+
+fn asset_event_to_change(
+  scene_event: &AssetEvent<Scene>,
+) -> Option<(AssetId<Scene>, Change)> {
+  match scene_event {
+    AssetEvent::Added { id } | AssetEvent::Modified { id } => {
+      Some((*id, Change::Reprocess))
+    }
+    AssetEvent::Removed { id } => Some((*id, Change::Remove)),
+    // Not possible for the scenes we care about, since we hold a strong
+    // handle to them.
+    AssetEvent::Unused { .. } => None,
+    AssetEvent::LoadedWithDependencies { .. } => None,
   }
 }
 
