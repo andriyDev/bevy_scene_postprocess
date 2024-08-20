@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use bevy::{
   app::{Plugin, Update},
-  asset::{AssetEvent, AssetId, Assets, Handle},
-  prelude::{AppTypeRegistry, EventReader, Res, ResMut, Resource, World},
+  asset::{AssetEvent, AssetId, Assets, Handle, StrongHandle},
+  prelude::{
+    AppTypeRegistry, EventReader, IntoSystemConfigs, Res, ResMut, Resource,
+    World,
+  },
   scene::Scene,
   tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task},
   utils::HashMap,
@@ -13,9 +16,15 @@ pub struct ScenePostProcessPlugin;
 
 impl Plugin for ScenePostProcessPlugin {
   fn build(&self, app: &mut bevy::prelude::App) {
-    app
-      .add_systems(Update, watch_for_changed_original)
-      .add_systems(Update, handle_finished_processing);
+    app.add_systems(
+      Update,
+      (
+        drop_unused_scenes,
+        watch_for_changed_original,
+        handle_finished_processing,
+      )
+        .chain(),
+    );
   }
 }
 
@@ -26,12 +35,29 @@ struct ScenePostProcessIntermediate {
 
 struct PostProcessAction {
   original_handle: Handle<Scene>,
-  output_handle: Handle<Scene>,
+  output_handle: Weak<StrongHandle>,
   actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
 }
 
 #[derive(Resource)]
 struct ScenePostProcessTasks(HashMap<AssetId<Scene>, Task<Scene>>);
+
+fn drop_unused_scenes(
+  mut intermediate: ResMut<ScenePostProcessIntermediate>,
+  mut post_process_tasks: ResMut<ScenePostProcessTasks>,
+) {
+  intermediate.original_to_post_process.retain(|original, action| {
+    if action.output_handle.strong_count() > 0 {
+      return true;
+    }
+
+    // We should cancel any existing tasks for this entry. Just let the task
+    // drop to cancel it.
+    post_process_tasks.0.remove(original);
+
+    false
+  });
+}
 
 fn watch_for_changed_original(
   mut scene_events: EventReader<AssetEvent<Scene>>,
@@ -46,7 +72,7 @@ fn watch_for_changed_original(
       Modified,
       Removed,
     }
-    let (id, change) = match scene_event {
+    let (original_id, change) = match scene_event {
       AssetEvent::Added { id } => (*id, Change::Added),
       AssetEvent::Modified { id } => (*id, Change::Modified),
       AssetEvent::Removed { id } => (*id, Change::Removed),
@@ -58,7 +84,7 @@ fn watch_for_changed_original(
     };
 
     let Some(post_process_action) =
-      intermediate.original_to_post_process.get(&id)
+      intermediate.original_to_post_process.get(&original_id)
     else {
       // This is not a scene we care about.
       continue;
@@ -67,8 +93,14 @@ fn watch_for_changed_original(
     if let Change::Removed = change {
       // If the original scene was removed, we should also remove the output
       // scene so they remain consistent.
-      scenes.remove(&post_process_action.output_handle);
-      post_process_tasks.0.remove(&id);
+      if let Some(strong_handle) = post_process_action.output_handle.upgrade() {
+        // If we can upgrade our strong handle, then the scenes Assets may still
+        // be holding the handle. Else the asset will have already been cleaned
+        // up by the strong handle drop.
+        scenes.remove(&Handle::Strong(strong_handle));
+      }
+      // Just drop the task if it's present to cancel it.
+      post_process_tasks.0.remove(&original_id);
       continue;
     }
 
@@ -95,7 +127,7 @@ fn watch_for_changed_original(
       }
       processed_scene
     });
-    post_process_tasks.0.insert(id, task);
+    post_process_tasks.0.insert(original_id, task);
   }
 }
 
@@ -119,7 +151,11 @@ fn handle_finished_processing(
       return false;
     };
 
-    scenes.insert(&post_process_action.output_handle, processed_scene);
+    // Only insert the scene if we can upgrade the handle (meaning someone still
+    // cares about the processed scene).
+    if let Some(strong_handle) = post_process_action.output_handle.upgrade() {
+      scenes.insert(&Handle::Strong(strong_handle), processed_scene);
+    }
 
     false
   });
