@@ -196,3 +196,7 @@ fn handle_finished_processing(
     false
   });
 }
+
+#[cfg(test)]
+#[path = "lib_test.rs"]
+mod test;
