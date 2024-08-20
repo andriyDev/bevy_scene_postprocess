@@ -3,6 +3,7 @@ use std::sync::{Arc, Weak};
 use bevy::{
   app::{Plugin, Update},
   asset::{AssetEvent, AssetId, Assets, Handle, StrongHandle},
+  ecs::system::SystemParam,
   prelude::{
     AppTypeRegistry, EventReader, IntoSystemConfigs, Res, ResMut, Resource,
     World,
@@ -25,6 +26,37 @@ impl Plugin for ScenePostProcessPlugin {
       )
         .chain(),
     );
+  }
+}
+
+#[derive(SystemParam)]
+pub struct ScenePostProcessor<'w> {
+  intermediate: ResMut<'w, ScenePostProcessIntermediate>,
+  scenes: Res<'w, Assets<Scene>>,
+}
+
+impl<'w> ScenePostProcessor<'w> {
+  pub fn process(
+    &mut self,
+    scene: Handle<Scene>,
+    actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
+  ) -> Handle<Scene> {
+    let output_handle = self.scenes.reserve_handle();
+    let Handle::Strong(output_strong_handle_arc) = &output_handle else {
+      unreachable!("reserve_handle always returns a Handle::Strong");
+    };
+
+    self.intermediate.original_to_post_process.insert(
+      scene.id(),
+      PostProcessAction {
+        original_handle: scene,
+        output_handle: Arc::downgrade(output_strong_handle_arc),
+        actions,
+      },
+    );
+    // TODO: Make sure already loaded scenes are processed immediately.
+
+    output_handle
   }
 }
 
