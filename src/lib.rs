@@ -17,15 +17,18 @@ pub struct ScenePostProcessPlugin;
 
 impl Plugin for ScenePostProcessPlugin {
   fn build(&self, app: &mut bevy::prelude::App) {
-    app.add_systems(
-      Update,
-      (
-        drop_unused_scenes,
-        watch_for_changed_original,
-        handle_finished_processing,
-      )
-        .chain(),
-    );
+    app
+      .init_resource::<ScenePostProcessIntermediate>()
+      .init_resource::<ScenePostProcessTasks>()
+      .add_systems(
+        Update,
+        (
+          drop_unused_scenes,
+          watch_for_changed_original,
+          handle_finished_processing,
+        )
+          .chain(),
+      );
   }
 }
 
@@ -60,7 +63,7 @@ impl<'w> ScenePostProcessor<'w> {
   }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 struct ScenePostProcessIntermediate {
   original_to_post_process: HashMap<AssetId<Scene>, PostProcessAction>,
 }
@@ -71,7 +74,7 @@ struct PostProcessAction {
   actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 struct ScenePostProcessTasks(HashMap<AssetId<Scene>, Task<Scene>>);
 
 fn drop_unused_scenes(
