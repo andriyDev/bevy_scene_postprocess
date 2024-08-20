@@ -1,8 +1,8 @@
 use std::sync::{Arc, Weak};
 
 use bevy::{
-  app::{Plugin, Update},
-  asset::{AssetEvent, AssetId, Assets, Handle, StrongHandle},
+  app::{Last, Plugin},
+  asset::{AssetEvent, AssetEvents, AssetId, Assets, Handle, StrongHandle},
   ecs::system::SystemParam,
   prelude::{
     AppTypeRegistry, EventReader, IntoSystemConfigs, Res, ResMut, Resource,
@@ -21,13 +21,14 @@ impl Plugin for ScenePostProcessPlugin {
       .init_resource::<ScenePostProcessIntermediate>()
       .init_resource::<ScenePostProcessTasks>()
       .add_systems(
-        Update,
+        Last,
         (
           drop_unused_scenes,
           watch_for_changed_original,
           handle_finished_processing,
         )
-          .chain(),
+          .chain()
+          .after(AssetEvents),
       );
   }
 }
