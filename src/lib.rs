@@ -107,16 +107,12 @@ fn watch_for_changed_original(
   mut post_process_tasks: ResMut<ScenePostProcessTasks>,
 ) {
   let intermediate = intermediate.as_mut();
-  for (original_id, change) in
-    scene_events.read().filter_map(asset_event_to_change).chain(
-      intermediate
-        .new_scenes
-        .drain()
-        .map(|original_id| (original_id, Change::Reprocess)),
-    )
+  for original_id in scene_events
+    .read()
+    .filter_map(asset_event_to_change)
+    .chain(intermediate.new_scenes.drain().map(|original_id| original_id))
+    .collect::<HashSet<_>>()
   {
-    // TODO: Skip post processing the same asset multiple times in one frame.
-
     let Some(post_process_action) =
       intermediate.original_to_post_process.get(&original_id)
     else {
@@ -124,8 +120,8 @@ fn watch_for_changed_original(
       continue;
     };
 
-    if let Change::Remove = change {
-      // If the original scene was removed, we should also remove the output
+    if !scenes.contains(original_id) {
+      // If the original scene is missing, we should also remove the output
       // scene so they remain consistent.
       if let Some(strong_handle) = post_process_action.output_handle.upgrade() {
         // If we can upgrade our strong handle, then the scenes Assets may still
@@ -165,19 +161,13 @@ fn watch_for_changed_original(
   }
 }
 
-enum Change {
-  Reprocess,
-  Remove,
-}
-
 fn asset_event_to_change(
   scene_event: &AssetEvent<Scene>,
-) -> Option<(AssetId<Scene>, Change)> {
+) -> Option<AssetId<Scene>> {
   match scene_event {
-    AssetEvent::Added { id } | AssetEvent::Modified { id } => {
-      Some((*id, Change::Reprocess))
-    }
-    AssetEvent::Removed { id } => Some((*id, Change::Remove)),
+    AssetEvent::Added { id }
+    | AssetEvent::Modified { id }
+    | AssetEvent::Removed { id } => Some(*id),
     // Not possible for the scenes we care about, since we hold a strong
     // handle to them.
     AssetEvent::Unused { .. } => None,
