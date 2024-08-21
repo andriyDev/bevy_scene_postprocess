@@ -10,4 +10,6 @@ bevy = { version = "0.14.1", default-features = false, features = [
   # TODO: Figure out how to support single-threaded cases.
   "multi_threaded",
 ] }
+
+[dev-dependencies]
 googletest = "0.12.0"
