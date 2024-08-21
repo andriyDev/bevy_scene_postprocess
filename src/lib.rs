@@ -9,7 +9,10 @@ use bevy::{
     World,
   },
   scene::Scene,
-  tasks::{block_on, futures_lite::future, tick_global_task_pools_on_main_thread, AsyncComputeTaskPool, Task},
+  tasks::{
+    block_on, futures_lite::future, tick_global_task_pools_on_main_thread,
+    AsyncComputeTaskPool, Task,
+  },
   utils::{HashMap, HashSet},
 };
 
@@ -24,8 +27,10 @@ impl Plugin for ScenePostProcessPlugin {
         Last,
         (
           drop_unused_scenes,
-          watch_for_changed_original.before(tick_global_task_pools_on_main_thread),
-          handle_finished_processing.after(tick_global_task_pools_on_main_thread),
+          watch_for_changed_original
+            .before(tick_global_task_pools_on_main_thread),
+          handle_finished_processing
+            .after(tick_global_task_pools_on_main_thread),
         )
           .chain()
           .after(AssetEvents),
@@ -43,7 +48,7 @@ impl<'w> ScenePostProcessor<'w> {
   pub fn process(
     &mut self,
     scene: Handle<Scene>,
-    actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
+    actions: Vec<Arc<dyn Fn(&mut World, &AppTypeRegistry) + Send + Sync>>,
   ) -> Handle<Scene> {
     let output_handle = self.scenes.reserve_handle();
     let Handle::Strong(output_strong_handle_arc) = &output_handle else {
@@ -76,7 +81,7 @@ struct ScenePostProcessIntermediate {
 struct PostProcessAction {
   original_handle: Handle<Scene>,
   output_handle: Weak<StrongHandle>,
-  actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
+  actions: Vec<Arc<dyn Fn(&mut World, &AppTypeRegistry) + Send + Sync>>,
 }
 
 #[derive(Resource, Default)]
@@ -147,13 +152,15 @@ fn watch_for_changed_original(
       continue;
     };
 
+    let type_registry = type_registry.clone();
+
     let async_actions = post_process_action.actions.clone();
 
     let task_pool = AsyncComputeTaskPool::get();
     let task = task_pool.spawn(async move {
       let mut processed_scene = cloned_scene;
       for action in async_actions {
-        action(&mut processed_scene.world);
+        action(&mut processed_scene.world, &type_registry);
       }
       processed_scene
     });
