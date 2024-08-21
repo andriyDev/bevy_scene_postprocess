@@ -9,7 +9,7 @@ use bevy::{
     World,
   },
   scene::Scene,
-  tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task},
+  tasks::{block_on, futures_lite::future, tick_global_task_pools_on_main_thread, AsyncComputeTaskPool, Task},
   utils::{HashMap, HashSet},
 };
 
@@ -24,8 +24,8 @@ impl Plugin for ScenePostProcessPlugin {
         Last,
         (
           drop_unused_scenes,
-          watch_for_changed_original,
-          handle_finished_processing,
+          watch_for_changed_original.before(tick_global_task_pools_on_main_thread),
+          handle_finished_processing.after(tick_global_task_pools_on_main_thread),
         )
           .chain()
           .after(AssetEvents),
