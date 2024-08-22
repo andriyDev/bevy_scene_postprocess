@@ -41,8 +41,8 @@ fn spawn_entity_with_marker_action(world: &mut World, _: &AppTypeRegistry) {
   world.spawn(ExampleMarker);
 }
 
-fn scene_contains_example_entity(scene: &mut Scene) -> bool {
-  let mut query_state = scene.world.query_filtered::<(), With<ExampleMarker>>();
+fn scene_contains_entity_with<T: Component>(scene: &mut Scene) -> bool {
+  let mut query_state = scene.world.query_filtered::<(), With<T>>();
   // Post processing inserted a new entity with the marker component.
   query_state.iter(&scene.world).len() == 1
 }
@@ -94,7 +94,7 @@ fn processes_scene_after_loading() {
   let processed_scene =
     scenes.get_mut(&processed_scene).expect("the scene is finally processed.");
   // Post processing inserted a new entity with the marker component.
-  expect_true!(scene_contains_example_entity(processed_scene));
+  expect_true!(scene_contains_entity_with::<ExampleMarker>(processed_scene));
   // There are no more tasks to be processed.
   expect_eq!(get_post_process_tasks(&app), 0);
 }
@@ -139,7 +139,7 @@ fn processes_loaded_scene_immediately() {
     .get_mut(&processed_scene)
     .expect("the processed scene has been loaded.");
   // Post processing inserted a new entity with the marker component.
-  expect_true!(scene_contains_example_entity(processed_scene));
+  expect_true!(scene_contains_entity_with::<ExampleMarker>(processed_scene));
   // There are no more tasks to be processed.
   expect_eq!(get_post_process_tasks(&app), 0);
 }
@@ -233,9 +233,61 @@ fn drops_post_process_on_drop_output() {
     app
       .world()
       .resource::<ScenePostProcessIntermediate>()
-      .original_to_post_process
+      .original_to_targets
       .len(),
     0
   );
   expect_eq!(get_post_process_tasks(&app), 0);
+}
+
+#[derive(Component)]
+struct AnotherMarker;
+
+fn spawn_entity_with_another_marker_action(
+  world: &mut World,
+  _: &AppTypeRegistry,
+) {
+  world.spawn(AnotherMarker);
+}
+
+#[googletest::test]
+fn allows_processing_same_scene_multiple_times() {
+  let mut app = create_app();
+  let task_pool = AsyncComputeTaskPool::get_or_init(|| TaskPool::new());
+
+  let mut scenes = get_scenes_mut(&mut app);
+
+  let scene_to_process = scenes.add(Scene { world: World::new() });
+
+  let (processed_scene_1, processed_scene_2) = {
+    let scene_to_process = scene_to_process.clone();
+    app.world_mut().run_system_once(
+      move |mut post_processor: ScenePostProcessor| {
+        let processed_scene_1 = post_processor.process(
+          scene_to_process.clone(),
+          vec![Arc::new(spawn_entity_with_marker_action)],
+        );
+        let processed_scene_2 = post_processor.process(
+          scene_to_process.clone(),
+          vec![Arc::new(spawn_entity_with_another_marker_action)],
+        );
+        (processed_scene_1, processed_scene_2)
+      },
+    )
+  };
+
+  // Update once to kickoff the processing.
+  app.update();
+  // Tick the task pool to finish its computation.
+  task_pool.with_local_executor(|exec| exec.try_tick());
+  // Update again to finish the processing.
+  app.update();
+
+  let mut scenes = get_scenes_mut(&mut app);
+  expect_true!(scene_contains_entity_with::<ExampleMarker>(
+    scenes.get_mut(&processed_scene_1).expect("The scene was processed."),
+  ));
+  expect_true!(scene_contains_entity_with::<AnotherMarker>(
+    scenes.get_mut(&processed_scene_2).expect("The scene was processed."),
+  ));
 }
