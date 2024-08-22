@@ -64,6 +64,7 @@ impl<'w> ScenePostProcessor<'w> {
       PostProcessAction {
         original_handle: scene,
         output_handle: Arc::downgrade(output_strong_handle_arc),
+        output_id: output_handle.id(),
         actions,
       },
     );
@@ -81,11 +82,18 @@ struct ScenePostProcessIntermediate {
 struct PostProcessAction {
   original_handle: Handle<Scene>,
   output_handle: Weak<StrongHandle>,
+  output_id: AssetId<Scene>,
   actions: Vec<Arc<dyn Fn(&mut World, &AppTypeRegistry) + Send + Sync>>,
 }
 
 #[derive(Resource, Default)]
-struct ScenePostProcessTasks(HashMap<AssetId<Scene>, Task<Scene>>);
+struct ScenePostProcessTasks(HashMap<PostProcessKey, Task<Scene>>);
+
+#[derive(Debug, Hash, PartialEq, Eq)]
+struct PostProcessKey {
+  original_id: AssetId<Scene>,
+  output_id: AssetId<Scene>,
+}
 
 fn drop_unused_scenes(
   mut intermediate: ResMut<ScenePostProcessIntermediate>,
@@ -98,7 +106,10 @@ fn drop_unused_scenes(
 
     // We should cancel any existing tasks for this entry. Just let the task
     // drop to cancel it.
-    post_process_tasks.0.remove(original);
+    post_process_tasks.0.remove(&PostProcessKey {
+      original_id: *original,
+      output_id: action.output_id,
+    });
 
     false
   });
@@ -135,7 +146,10 @@ fn watch_for_changed_original(
         scenes.remove(&Handle::Strong(strong_handle));
       }
       // Just drop the task if it's present to cancel it.
-      post_process_tasks.0.remove(&original_id);
+      post_process_tasks.0.remove(&PostProcessKey {
+        original_id,
+        output_id: post_process_action.output_id,
+      });
       continue;
     }
 
@@ -164,7 +178,10 @@ fn watch_for_changed_original(
       }
       processed_scene
     });
-    post_process_tasks.0.insert(original_id, task);
+    post_process_tasks.0.insert(
+      PostProcessKey { original_id, output_id: post_process_action.output_id },
+      task,
+    );
   }
 }
 
@@ -196,7 +213,7 @@ fn handle_finished_processing(
       block_on(future::poll_once(task)).expect("the task is finished");
 
     let Some(post_process_action) =
-      intermediate.original_to_post_process.get(id)
+      intermediate.original_to_post_process.get(&id.original_id)
     else {
       // The conversion must have been deleted, so just ignore this as spurious.
       return false;
