@@ -3,8 +3,14 @@ name = "bevy_scene_postprocess"
 version = "0.1.0"
 edition = "2021"
 
+description = "A crate for Bevy that provides a way to postprocess scenes after loading them"
+
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/andriyDev/bevy_scene_postprocess"
+
+categories = ["game-development"]
+keywords = ["bevy", "scene", "post", "process", "hook"]
 
 [dependencies]
 bevy = { version = "0.14.1", default-features = false, features = [
