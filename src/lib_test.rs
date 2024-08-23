@@ -8,8 +8,8 @@ use bevy::{ecs::system::RunSystemOnce, prelude::*, scene::ScenePlugin};
 use googletest::prelude::*;
 
 use crate::{
-  RegisteredPostProcessActions, ScenePostProcessPlugin, ScenePostProcessTasks,
-  ScenePostProcessor,
+  BoxedError, RegisteredPostProcessActions, ScenePostProcessPlugin,
+  ScenePostProcessTasks, ScenePostProcessor,
 };
 
 fn create_app() -> App {
@@ -39,7 +39,7 @@ struct ExampleMarker;
 
 fn spawn_entity_with_marker_action(
   world: &mut World,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), BoxedError> {
   world.spawn(ExampleMarker);
 
   Ok(())
@@ -231,7 +231,7 @@ struct AnotherMarker;
 
 fn spawn_entity_with_another_marker_action(
   world: &mut World,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+) -> Result<(), BoxedError> {
   world.spawn(AnotherMarker);
 
   Ok(())
@@ -288,15 +288,13 @@ fn error_causes_failed_load() {
   let processed_scene = {
     let should_fail = should_fail.clone();
 
-    let action = Arc::new(
-      move |world: &mut World| -> Result<(), Box<dyn Error + Send + Sync>> {
-        if *should_fail.lock().unwrap() {
-          return Err("Some message".into());
-        }
+    let action = Arc::new(move |world: &mut World| -> Result<(), BoxedError> {
+      if *should_fail.lock().unwrap() {
+        return Err("Some message".into());
+      }
 
-        spawn_entity_with_marker_action(world)
-      },
-    );
+      spawn_entity_with_marker_action(world)
+    });
 
     let scene_to_process = scene_to_process.clone();
 

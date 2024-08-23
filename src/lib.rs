@@ -79,13 +79,7 @@ impl<'w> ScenePostProcessor<'w> {
   pub fn process(
     &mut self,
     scene: Handle<Scene>,
-    actions: Vec<
-      Arc<
-        dyn Fn(&mut World) -> Result<(), Box<dyn Error + Send + Sync>>
-          + Send
-          + Sync,
-      >,
-    >,
+    actions: Vec<Arc<ActionFunc>>,
   ) -> Handle<Scene> {
     let processed_handle = self.scenes.reserve_handle();
     let Handle::Strong(processed_strong_handle_arc) = &processed_handle else {
@@ -116,6 +110,13 @@ impl<'w> ScenePostProcessor<'w> {
     processed_handle
   }
 }
+
+/// Error type for post-processing actions.
+pub type BoxedError = Box<dyn Error + Send + Sync>;
+
+// A post-processing action.
+pub type ActionFunc =
+  dyn Fn(&mut World) -> Result<(), BoxedError> + Send + Sync;
 
 /// The registered actions that will take a scene and create a post-processed
 /// scene.
@@ -156,19 +157,13 @@ struct PostProcessAction {
   /// about our asset until we first insert the asset (after we've
   /// post-processed the first time).
   processed_handle: Weak<StrongHandle>,
-  actions: Vec<
-    Arc<
-      dyn Fn(&mut World) -> Result<(), Box<dyn Error + Send + Sync>>
-        + Send
-        + Sync,
-    >,
-  >,
+  actions: Vec<Arc<ActionFunc>>,
 }
 
 /// The currently running post-processing tasks.
 #[derive(Resource, Default)]
 struct ScenePostProcessTasks(
-  HashMap<PostProcessKey, Task<Result<Scene, Box<dyn Error + Send + Sync>>>>,
+  HashMap<PostProcessKey, Task<Result<Scene, BoxedError>>>,
 );
 
 /// The key for a post-processing task.
@@ -219,7 +214,7 @@ fn watch_for_changed_unprocessed(
   for unprocessed_id in scene_events
     .read()
     .filter_map(asset_event_to_change)
-    .chain(intermediate.new_scenes.drain().map(|unprocessed_id| unprocessed_id))
+    .chain(intermediate.new_scenes.drain())
     .collect::<HashSet<_>>()
   {
     let Some(post_process_targets) =
@@ -273,10 +268,7 @@ fn watch_for_changed_unprocessed(
       let task = task_pool.spawn(async move {
         let mut processed_scene = cloned_scene;
         for action in async_actions {
-          match action(&mut processed_scene.world) {
-            Err(error) => return Err(error),
-            Ok(()) => {}
-          }
+          action(&mut processed_scene.world)?;
         }
         Ok(processed_scene)
       });
