@@ -56,8 +56,7 @@ pub struct ScenePostProcessor<'w> {
 impl<'w> ScenePostProcessor<'w> {
   /// Registers a post-processing action on `scene`, which will apply the
   /// `actions` in order. Actions are given a copy of the world contained within
-  /// `scene`, and the type registry of the main world (to allow for decoding
-  /// components).
+  /// `scene` and can mutate that scene in any way they want.
   ///
   /// Some things to note:
   ///   - The same scene can be registered multiple times, and each registration
@@ -74,7 +73,7 @@ impl<'w> ScenePostProcessor<'w> {
   pub fn process(
     &mut self,
     scene: Handle<Scene>,
-    actions: Vec<Arc<dyn Fn(&mut World, &AppTypeRegistry) + Send + Sync>>,
+    actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
   ) -> Handle<Scene> {
     let processed_handle = self.scenes.reserve_handle();
     let Handle::Strong(processed_strong_handle_arc) = &processed_handle else {
@@ -145,7 +144,7 @@ struct PostProcessAction {
   /// about our asset until we first insert the asset (after we've
   /// post-processed the first time).
   processed_handle: Weak<StrongHandle>,
-  actions: Vec<Arc<dyn Fn(&mut World, &AppTypeRegistry) + Send + Sync>>,
+  actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
 }
 
 /// The currently running post-processing tasks.
@@ -248,15 +247,13 @@ fn watch_for_changed_unprocessed(
         continue;
       };
 
-      let type_registry = type_registry.clone();
-
       let async_actions = action.actions.clone();
 
       let task_pool = AsyncComputeTaskPool::get();
       let task = task_pool.spawn(async move {
         let mut processed_scene = cloned_scene;
         for action in async_actions {
-          action(&mut processed_scene.world, &type_registry);
+          action(&mut processed_scene.world);
         }
         processed_scene
       });

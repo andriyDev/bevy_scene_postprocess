@@ -37,7 +37,7 @@ fn get_post_process_tasks(app: &App) -> usize {
 #[derive(Component)]
 struct ExampleMarker;
 
-fn spawn_entity_with_marker_action(world: &mut World, _: &AppTypeRegistry) {
+fn spawn_entity_with_marker_action(world: &mut World) {
   world.spawn(ExampleMarker);
 }
 
@@ -243,10 +243,7 @@ fn drops_post_process_on_drop_output() {
 #[derive(Component)]
 struct AnotherMarker;
 
-fn spawn_entity_with_another_marker_action(
-  world: &mut World,
-  _: &AppTypeRegistry,
-) {
+fn spawn_entity_with_another_marker_action(world: &mut World) {
   world.spawn(AnotherMarker);
 }
 
