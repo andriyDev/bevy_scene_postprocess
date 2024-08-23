@@ -1,11 +1,6 @@
 use std::sync::Arc;
 
-use bevy::{
-  ecs::system::RunSystemOnce,
-  prelude::*,
-  scene::ScenePlugin,
-  tasks::{AsyncComputeTaskPool, TaskPool},
-};
+use bevy::{ecs::system::RunSystemOnce, prelude::*, scene::ScenePlugin};
 use googletest::prelude::*;
 
 use crate::{
@@ -18,6 +13,7 @@ fn create_app() -> App {
   app
     .add_plugins(AssetPlugin::default())
     .add_plugins(ScenePlugin)
+    .add_plugins(TaskPoolPlugin::default())
     .add_plugins(ScenePostProcessPlugin);
   app
 }
@@ -50,7 +46,6 @@ fn scene_contains_entity_with<T: Component>(scene: &mut Scene) -> bool {
 #[googletest::test]
 fn processes_scene_after_loading() {
   let mut app = create_app();
-  let task_pool = AsyncComputeTaskPool::get_or_init(|| TaskPool::new());
 
   let scene_to_process = get_scenes(&app).reserve_handle();
 
@@ -84,10 +79,6 @@ fn processes_scene_after_loading() {
   // There is a task to be processed.
   expect_eq!(get_post_process_tasks(&app), 1);
 
-  task_pool.with_local_executor(|executor| {
-    executor.try_tick();
-  });
-
   app.update();
 
   let mut scenes = get_scenes_mut(&mut app);
@@ -102,7 +93,6 @@ fn processes_scene_after_loading() {
 #[googletest::test]
 fn processes_loaded_scene_immediately() {
   let mut app = create_app();
-  let task_pool = AsyncComputeTaskPool::get_or_init(|| TaskPool::new());
 
   let mut scenes = get_scenes_mut(&mut app);
   let scene_to_process = scenes.add(Scene { world: World::new() });
@@ -125,12 +115,6 @@ fn processes_loaded_scene_immediately() {
 
   // Let the processor "see" the new processed scene.
   app.update();
-
-  // Let the task pool finish its computation.
-  task_pool.with_local_executor(|exec| {
-    exec.try_tick();
-  });
-
   // Let the processor handle the finished processing.
   app.update();
 
@@ -147,7 +131,6 @@ fn processes_loaded_scene_immediately() {
 #[googletest::test]
 fn multiple_asset_events_only_results_in_one_change() {
   let mut app = create_app();
-  let task_pool = AsyncComputeTaskPool::get_or_init(|| TaskPool::new());
 
   let mut scenes = get_scenes_mut(&mut app);
   let scene_to_process = scenes.add(Scene { world: World::new() });
@@ -165,11 +148,9 @@ fn multiple_asset_events_only_results_in_one_change() {
     )
   };
 
-  // Update once to kickoff the processing.
+  // Update to process the scene.
   app.update();
-  // Tick the task pool to finish its computation.
-  task_pool.with_local_executor(|exec| exec.try_tick());
-  // Update again to finish the processing.
+  // Let the processor finish processing.
   app.update();
   // Update thrice more to clear out all the events.
   app.update();
@@ -190,14 +171,13 @@ fn multiple_asset_events_only_results_in_one_change() {
   // ... but there was only one task created.
   expect_eq!(get_post_process_tasks(&app), 1);
 
-  // Tick the task pool to clear out the task.
-  task_pool.with_local_executor(|exec| exec.try_tick());
+  // Update again to hopefully clear out the task pool.
+  app.update();
 }
 
 #[googletest::test]
 fn drops_post_process_on_drop_output() {
   let mut app = create_app();
-  let task_pool = AsyncComputeTaskPool::get_or_init(|| TaskPool::new());
 
   let mut scenes = get_scenes_mut(&mut app);
 
@@ -214,11 +194,9 @@ fn drops_post_process_on_drop_output() {
     )
   };
 
-  // Update once to kickoff the processing.
+  // Update to process the scene.
   app.update();
-  // Tick the task pool to finish its computation.
-  task_pool.with_local_executor(|exec| exec.try_tick());
-  // Update again to finish the processing.
+  // Let the processor finish processing.
   app.update();
 
   drop(processed_scene);
@@ -250,7 +228,6 @@ fn spawn_entity_with_another_marker_action(world: &mut World) {
 #[googletest::test]
 fn allows_processing_same_scene_multiple_times() {
   let mut app = create_app();
-  let task_pool = AsyncComputeTaskPool::get_or_init(|| TaskPool::new());
 
   let mut scenes = get_scenes_mut(&mut app);
 
@@ -273,11 +250,9 @@ fn allows_processing_same_scene_multiple_times() {
     )
   };
 
-  // Update once to kickoff the processing.
+  // Update to process the scenes.
   app.update();
-  // Tick the task pool to finish its computation.
-  task_pool.with_local_executor(|exec| exec.try_tick());
-  // Update again to finish the processing.
+  // Let the processor finish processing.
   app.update();
 
   let mut scenes = get_scenes_mut(&mut app);
