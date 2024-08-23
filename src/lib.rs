@@ -78,6 +78,10 @@ impl<'w> ScenePostProcessor<'w> {
   ///     completes, it may only have one load event (for the final finished
   ///     processing). The processed scene however should end up matching the
   ///     unprocessed scene's state.
+  ///   - The unprocessed scene must be copyable. That is, all the components in
+  ///     it must be copyable using reflection. Practically this is also true of
+  ///     any components created by post-processing actions (since you probably
+  ///     want to spawn the processed scene eventually).
   pub fn process(
     &mut self,
     scene: Handle<Scene>,
