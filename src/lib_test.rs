@@ -9,7 +9,7 @@ use bevy::{
 use googletest::prelude::*;
 
 use crate::{
-  ScenePostProcessIntermediate, ScenePostProcessPlugin, ScenePostProcessTasks,
+  RegisteredPostProcessActions, ScenePostProcessPlugin, ScenePostProcessTasks,
   ScenePostProcessor,
 };
 
@@ -232,7 +232,7 @@ fn drops_post_process_on_drop_output() {
   expect_eq!(
     app
       .world()
-      .resource::<ScenePostProcessIntermediate>()
+      .resource::<RegisteredPostProcessActions>()
       .original_to_targets
       .len(),
     0

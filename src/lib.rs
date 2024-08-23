@@ -6,7 +6,7 @@ use bevy::{
   ecs::system::SystemParam,
   prelude::{
     AppTypeRegistry, EventReader, IntoSystemConfigs, Res, ResMut, Resource,
-    World,
+    SystemSet, World,
   },
   scene::Scene,
   tasks::{
@@ -16,12 +16,13 @@ use bevy::{
   utils::{HashMap, HashSet},
 };
 
+/// A plugin to enable post processing scenes.
 pub struct ScenePostProcessPlugin;
 
 impl Plugin for ScenePostProcessPlugin {
   fn build(&self, app: &mut bevy::prelude::App) {
     app
-      .init_resource::<ScenePostProcessIntermediate>()
+      .init_resource::<RegisteredPostProcessActions>()
       .init_resource::<ScenePostProcessTasks>()
       .add_systems(
         Last,
@@ -32,19 +33,44 @@ impl Plugin for ScenePostProcessPlugin {
           handle_finished_processing
             .after(tick_global_task_pools_on_main_thread),
         )
+          .in_set(PostProcessSet)
           .chain()
           .after(AssetEvents),
       );
   }
 }
 
+/// The system set for post processing scenes.
+#[derive(SystemSet, PartialEq, Eq, Hash, Debug, Clone)]
+pub struct PostProcessSet;
+
+/// A system param for registering post-processing actions.
 #[derive(SystemParam)]
 pub struct ScenePostProcessor<'w> {
-  intermediate: ResMut<'w, ScenePostProcessIntermediate>,
+  /// The registered post-processing actions.
+  intermediate: ResMut<'w, RegisteredPostProcessActions>,
+  /// The currently existing scenes.
   scenes: Res<'w, Assets<Scene>>,
 }
 
 impl<'w> ScenePostProcessor<'w> {
+  /// Registers a post-processing action on `scene`, which will apply the
+  /// `actions` in order. Actions are given a copy of the world contained within
+  /// `scene`, and the type registry of the main world (to allow for decoding
+  /// components).
+  ///
+  /// Some things to note:
+  ///   - The same scene can be registered multiple times, and each registration
+  ///     will post-process its own scene.
+  ///   - The original, unprocessed scene will remain loaded even after
+  ///     post-processing actions have completed. This allows for listening for
+  ///     hot-reloading events.
+  ///   - The post-processed scene may not have all the same asset events as the
+  ///     original scene. For example, if the unprocessed scene is loaded, then
+  ///     unloads and then loads again before the first processing completes, it
+  ///     may only have one load event (for the final finished processing). The
+  ///     processed scene however should end up matching the original scene's
+  ///     state.
   pub fn process(
     &mut self,
     scene: Handle<Scene>,
@@ -79,33 +105,65 @@ impl<'w> ScenePostProcessor<'w> {
   }
 }
 
+/// The registered actions that will take a scene and create a post-processed
+/// scene.
 #[derive(Resource, Default)]
-struct ScenePostProcessIntermediate {
+struct RegisteredPostProcessActions {
+  /// A map from the original scene's asset ID to the targets that should be
+  /// updated on changes. We store an [`AssetId`] since this is what
+  /// [`AssetEvent`] passes.
   original_to_targets: HashMap<AssetId<Scene>, ProcessingTargets>,
+  /// The set of scenes that were added that are immediately ready to be
+  /// processed.
   new_scenes: HashSet<AssetId<Scene>>,
 }
 
+/// The targets to be updated when a scene is updated.
 struct ProcessingTargets {
+  /// The handle of the original scene we want to process. Note this must be a
+  /// strong handle to keep the asset alive (or else the load could be
+  /// cancelled if no original scene handles remain).
   original_handle: Handle<Scene>,
+  /// A map from the output scene's asset ID to the action that should be
+  /// performed for that asset. We store an [`AssetId`] so we don't keep the
+  /// output handle alive here (and because [`Weak<StrongHandle>`] doesn't impl
+  /// [`Hash`]).
   output_to_action: HashMap<AssetId<Scene>, PostProcessAction>,
 }
 
+/// The action to take when post-processing occurs.
 struct PostProcessAction {
+  /// The handle where the post-processed scene will be written to. We store a
+  /// [`Weak<StrongHandle>`], since:
+  ///
+  /// 1) we need to be able to determine whether the last reference to the
+  ///    asset is gone (so we can drop this action), and
+  /// 2) we don't want to keep the processed asset alive.
+  ///
+  /// We can't use an [`AssetId<Scene>`] since [`Assets<Scene>`] doesn't know
+  /// about our asset until we first insert the asset (after we've
+  /// post-processed the first time).
   output_handle: Weak<StrongHandle>,
   actions: Vec<Arc<dyn Fn(&mut World, &AppTypeRegistry) + Send + Sync>>,
 }
 
+/// The currently running post-processing tasks.
 #[derive(Resource, Default)]
 struct ScenePostProcessTasks(HashMap<PostProcessKey, Task<Scene>>);
 
+/// The key for a post-processing task.
 #[derive(Debug, Hash, PartialEq, Eq)]
 struct PostProcessKey {
+  /// The [`AssetId`] of the scene we are processing.
   original_id: AssetId<Scene>,
+  /// The [`AssetId`] where the processed scene will be written to.
   output_id: AssetId<Scene>,
 }
 
+/// System that looks through all the output scene handles, and drops those that
+/// are no longer used.
 fn drop_unused_scenes(
-  mut intermediate: ResMut<ScenePostProcessIntermediate>,
+  mut intermediate: ResMut<RegisteredPostProcessActions>,
   mut post_process_tasks: ResMut<ScenePostProcessTasks>,
 ) {
   intermediate.original_to_targets.retain(|original_id, targets| {
@@ -128,9 +186,11 @@ fn drop_unused_scenes(
   });
 }
 
+/// System that reads events for the unprocessed assets and ensures the
+/// processing starts or is cleared to match the state of the unprocessed asset.
 fn watch_for_changed_original(
   mut scene_events: EventReader<AssetEvent<Scene>>,
-  mut intermediate: ResMut<ScenePostProcessIntermediate>,
+  mut intermediate: ResMut<RegisteredPostProcessActions>,
   type_registry: Res<AppTypeRegistry>,
   mut scenes: ResMut<Assets<Scene>>,
   mut post_process_tasks: ResMut<ScenePostProcessTasks>,
@@ -199,6 +259,7 @@ fn watch_for_changed_original(
   }
 }
 
+/// Determines whether to reprocess an asset from an asset event.
 fn asset_event_to_change(
   scene_event: &AssetEvent<Scene>,
 ) -> Option<AssetId<Scene>> {
@@ -213,9 +274,11 @@ fn asset_event_to_change(
   }
 }
 
+/// System that checks for any finished processing tasks and writes their
+/// results to the [`Assets<Scene>`] resource.
 fn handle_finished_processing(
   mut post_process_tasks: ResMut<ScenePostProcessTasks>,
-  intermediate: Res<ScenePostProcessIntermediate>,
+  intermediate: Res<RegisteredPostProcessActions>,
   mut scenes: ResMut<Assets<Scene>>,
 ) {
   post_process_tasks.0.retain(|key, task| {
