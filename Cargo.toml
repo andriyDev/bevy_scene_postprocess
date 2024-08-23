@@ -12,6 +12,8 @@ repository = "https://github.com/andriyDev/bevy_scene_postprocess"
 categories = ["game-development"]
 keywords = ["bevy", "scene", "post", "process", "hook"]
 
+exclude = [".github/"]
+
 [dependencies]
 bevy = { version = "0.14.1", default-features = false, features = [
   "bevy_scene",
