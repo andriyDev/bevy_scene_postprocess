@@ -136,6 +136,43 @@ fn processes_loaded_scene_immediately() {
 }
 
 #[googletest::test]
+fn drops_processed_scene_if_unprocessed_is_dropped() {
+  let mut app = create_app();
+
+  let mut scenes = get_scenes_mut(&mut app);
+  let scene_to_process = scenes.add(Scene { world: World::new() });
+
+  let processed_scene = {
+    let scene_to_process = scene_to_process.clone();
+    app.world_mut().run_system_once(
+      move |mut post_processor: ScenePostProcessor| {
+        post_processor.process(
+          scene_to_process.clone(),
+          vec![Arc::new(spawn_entity_with_marker_action)],
+        )
+      },
+    )
+  };
+
+  // Start processing.
+  app.update();
+  // Finish processing.
+  app.update();
+
+  let mut scenes = get_scenes_mut(&mut app);
+  expect_that!(scenes.get(&processed_scene), some(anything()));
+
+  // Removing the unprocessed scene should also remove the processed scene.
+  scenes.remove(&scene_to_process);
+
+  // Update to let the plugin react.
+  app.update();
+
+  let scenes = get_scenes_mut(&mut app);
+  expect_that!(scenes.get(&processed_scene), none());
+}
+
+#[googletest::test]
 fn multiple_asset_events_only_results_in_one_change() {
   let mut app = create_app();
 
