@@ -157,6 +157,7 @@ struct PostProcessAction {
   /// about our asset until we first insert the asset (after we've
   /// post-processed the first time).
   processed_handle: Weak<StrongHandle>,
+  // The list of actions to apply to the scene in order.
   actions: Vec<Arc<ActionFunc>>,
 }
 
