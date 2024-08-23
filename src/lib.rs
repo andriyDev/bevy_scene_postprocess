@@ -20,7 +20,9 @@ use bevy::{
   utils::{HashMap, HashSet},
 };
 
-/// A plugin to enable post processing scenes.
+/// A plugin to enable post processing scenes. This requires the
+/// [`bevy::asset::AssetPlugin`], [`bevy::scene::ScenePlugin`], and
+/// [`bevy::core::TaskPoolPlugin`].
 pub struct ScenePostProcessPlugin;
 
 impl Plugin for ScenePostProcessPlugin {
