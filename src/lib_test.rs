@@ -1,5 +1,4 @@
 use std::{
-  error::Error,
   result::Result,
   sync::{Arc, Mutex},
 };
