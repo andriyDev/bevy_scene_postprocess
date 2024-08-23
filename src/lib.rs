@@ -214,7 +214,7 @@ fn watch_for_changed_unprocessed(
   mut post_process_tasks: ResMut<ScenePostProcessTasks>,
 ) {
   let intermediate = intermediate.as_mut();
-  for unprocessed_id in scene_events
+  'outer_loop: for unprocessed_id in scene_events
     .read()
     .filter_map(asset_event_to_change)
     .chain(intermediate.new_scenes.drain())
@@ -259,10 +259,18 @@ fn watch_for_changed_unprocessed(
     for (&processed_id, action) in
       post_process_targets.processed_to_action.iter()
     {
-      let Ok(cloned_scene) = unprocessed_scene.clone_with(&type_registry)
-      else {
-        // TODO: Emit an event here to notify of errors.
-        continue;
+      let cloned_scene = match unprocessed_scene.clone_with(&type_registry) {
+        Err(error) => {
+          warn!("Failed to clone the unprocessed scene: {error}");
+          // This should only ever happen on the first iteration, so removing
+          // all the processed scenes should be fine (we don't need to worry
+          // about any tasks).
+          for &processed_id in post_process_targets.processed_to_action.keys() {
+            scenes.remove(processed_id);
+          }
+          continue 'outer_loop;
+        }
+        Ok(cloned_scene) => cloned_scene,
       };
 
       let async_actions = action.actions.clone();

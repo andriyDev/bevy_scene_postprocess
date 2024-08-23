@@ -350,3 +350,58 @@ fn error_causes_failed_load() {
   // The scene was reprocessed successfully!
   expect_that!(scenes.get(&processed_scene), some(anything()));
 }
+
+#[derive(Component)]
+struct MyUnregisteredComponent;
+
+#[googletest::test]
+fn failed_to_clone_scene_removes_all_processed_scenes() {
+  let mut app = create_app();
+
+  let mut scenes = get_scenes_mut(&mut app);
+  let scene_to_process = scenes.add(Scene { world: World::new() });
+
+  let (processed_scene_1, processed_scene_2) = {
+    let scene_to_process = scene_to_process.clone();
+    app.world_mut().run_system_once(
+      move |mut post_processor: ScenePostProcessor| {
+        let processed_scene_1 = post_processor.process(
+          scene_to_process.clone(),
+          vec![Arc::new(spawn_entity_with_marker_action)],
+        );
+        let processed_scene_2 = post_processor.process(
+          scene_to_process.clone(),
+          vec![Arc::new(spawn_entity_with_another_marker_action)],
+        );
+        (processed_scene_1, processed_scene_2)
+      },
+    )
+  };
+
+  // Start processing.
+  app.update();
+  // Finish processing.
+  app.update();
+
+  expect_eq!(get_post_process_tasks(&app), 0);
+  let scenes = get_scenes(&mut app);
+  // The scenes were processed successfully.
+  expect_that!(scenes.get(&processed_scene_1), some(anything()));
+  expect_that!(scenes.get(&processed_scene_2), some(anything()));
+
+  let mut scenes = get_scenes_mut(&mut app);
+  *scenes.get_mut(&scene_to_process).unwrap() = {
+    let mut scene = Scene { world: World::new() };
+    scene.world.spawn(MyUnregisteredComponent);
+    scene
+  };
+
+  // Start processing, which should fail.
+  app.update();
+
+  expect_eq!(get_post_process_tasks(&app), 0);
+  let scenes = get_scenes(&mut app);
+  // The scenes were both removed since cloning the unprocessed scene failed.
+  expect_that!(scenes.get(&processed_scene_1), none());
+  expect_that!(scenes.get(&processed_scene_2), none());
+}
