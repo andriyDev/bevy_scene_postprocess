@@ -18,7 +18,8 @@ exclude = [".github/"]
 bevy = { version = "0.14.1", default-features = false, features = [
   "bevy_scene",
   "bevy_asset",
-  # TODO: Figure out how to support single-threaded cases.
+  # TODO: Remove this once there is a release including
+  # https://github.com/bevyengine/bevy/pull/13889
   "multi_threaded",
 ] }
 
