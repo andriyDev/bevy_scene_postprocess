@@ -28,7 +28,7 @@ impl Plugin for ScenePostProcessPlugin {
         Last,
         (
           drop_unused_scenes,
-          watch_for_changed_original
+          watch_for_changed_unprocessed
             .before(tick_global_task_pools_on_main_thread),
           handle_finished_processing
             .after(tick_global_task_pools_on_main_thread),
@@ -66,18 +66,18 @@ impl<'w> ScenePostProcessor<'w> {
   ///     post-processing actions have completed. This allows for listening for
   ///     hot-reloading events.
   ///   - The post-processed scene may not have all the same asset events as the
-  ///     original scene. For example, if the unprocessed scene is loaded, then
-  ///     unloads and then loads again before the first processing completes, it
-  ///     may only have one load event (for the final finished processing). The
-  ///     processed scene however should end up matching the original scene's
-  ///     state.
+  ///     unprocessed scene. For example, if the unprocessed scene is loaded,
+  ///     then unloads and then loads again before the first processing
+  ///     completes, it may only have one load event (for the final finished
+  ///     processing). The processed scene however should end up matching the
+  ///     unprocessed scene's state.
   pub fn process(
     &mut self,
     scene: Handle<Scene>,
     actions: Vec<Arc<dyn Fn(&mut World, &AppTypeRegistry) + Send + Sync>>,
   ) -> Handle<Scene> {
-    let output_handle = self.scenes.reserve_handle();
-    let Handle::Strong(output_strong_handle_arc) = &output_handle else {
+    let processed_handle = self.scenes.reserve_handle();
+    let Handle::Strong(processed_strong_handle_arc) = &processed_handle else {
       unreachable!("reserve_handle always returns a Handle::Strong");
     };
 
@@ -85,23 +85,24 @@ impl<'w> ScenePostProcessor<'w> {
       self.intermediate.new_scenes.insert(scene.id());
     }
 
-    let processing_targets =
-      self.intermediate.original_to_targets.entry(scene.id()).or_insert_with(
-        move || ProcessingTargets {
-          original_handle: scene,
-          output_to_action: HashMap::new(),
-        },
-      );
+    let processing_targets = self
+      .intermediate
+      .unprocessed_to_targets
+      .entry(scene.id())
+      .or_insert_with(move || ProcessingTargets {
+        unprocessed_handle: scene,
+        processed_to_action: HashMap::new(),
+      });
 
-    processing_targets.output_to_action.insert(
-      output_handle.id(),
+    processing_targets.processed_to_action.insert(
+      processed_handle.id(),
       PostProcessAction {
-        output_handle: Arc::downgrade(output_strong_handle_arc),
+        processed_handle: Arc::downgrade(processed_strong_handle_arc),
         actions,
       },
     );
 
-    output_handle
+    processed_handle
   }
 }
 
@@ -109,26 +110,26 @@ impl<'w> ScenePostProcessor<'w> {
 /// scene.
 #[derive(Resource, Default)]
 struct RegisteredPostProcessActions {
-  /// A map from the original scene's asset ID to the targets that should be
+  /// A map from the unprocessed scene's asset ID to the targets that should be
   /// updated on changes. We store an [`AssetId`] since this is what
   /// [`AssetEvent`] passes.
-  original_to_targets: HashMap<AssetId<Scene>, ProcessingTargets>,
-  /// The set of scenes that were added that are immediately ready to be
+  unprocessed_to_targets: HashMap<AssetId<Scene>, ProcessingTargets>,
+  /// The set of scenes that were registered that are immediately ready to be
   /// processed.
   new_scenes: HashSet<AssetId<Scene>>,
 }
 
 /// The targets to be updated when a scene is updated.
 struct ProcessingTargets {
-  /// The handle of the original scene we want to process. Note this must be a
-  /// strong handle to keep the asset alive (or else the load could be
-  /// cancelled if no original scene handles remain).
-  original_handle: Handle<Scene>,
-  /// A map from the output scene's asset ID to the action that should be
+  /// The handle of the unprocessed scene we want to process. Note this must be
+  /// a strong handle to keep the asset alive (or else the load could be
+  /// cancelled if no unprocessed scene handles remain).
+  unprocessed_handle: Handle<Scene>,
+  /// A map from the processed scene's asset ID to the action that should be
   /// performed for that asset. We store an [`AssetId`] so we don't keep the
-  /// output handle alive here (and because [`Weak<StrongHandle>`] doesn't impl
-  /// [`Hash`]).
-  output_to_action: HashMap<AssetId<Scene>, PostProcessAction>,
+  /// processed handle alive here (and because [`Weak<StrongHandle>`] doesn't
+  /// impl [`Hash`]).
+  processed_to_action: HashMap<AssetId<Scene>, PostProcessAction>,
 }
 
 /// The action to take when post-processing occurs.
@@ -143,7 +144,7 @@ struct PostProcessAction {
   /// We can't use an [`AssetId<Scene>`] since [`Assets<Scene>`] doesn't know
   /// about our asset until we first insert the asset (after we've
   /// post-processed the first time).
-  output_handle: Weak<StrongHandle>,
+  processed_handle: Weak<StrongHandle>,
   actions: Vec<Arc<dyn Fn(&mut World, &AppTypeRegistry) + Send + Sync>>,
 }
 
@@ -155,40 +156,40 @@ struct ScenePostProcessTasks(HashMap<PostProcessKey, Task<Scene>>);
 #[derive(Debug, Hash, PartialEq, Eq)]
 struct PostProcessKey {
   /// The [`AssetId`] of the scene we are processing.
-  original_id: AssetId<Scene>,
+  unprocessed_id: AssetId<Scene>,
   /// The [`AssetId`] where the processed scene will be written to.
-  output_id: AssetId<Scene>,
+  processed_id: AssetId<Scene>,
 }
 
-/// System that looks through all the output scene handles, and drops those that
-/// are no longer used.
+/// System that looks through all the processed scene handles, and drops those
+/// that are no longer used.
 fn drop_unused_scenes(
   mut intermediate: ResMut<RegisteredPostProcessActions>,
   mut post_process_tasks: ResMut<ScenePostProcessTasks>,
 ) {
-  intermediate.original_to_targets.retain(|original_id, targets| {
-    targets.output_to_action.retain(|output_id, action| {
-      if action.output_handle.strong_count() > 0 {
+  intermediate.unprocessed_to_targets.retain(|unprocessed_id, targets| {
+    targets.processed_to_action.retain(|processed_id, action| {
+      if action.processed_handle.strong_count() > 0 {
         return true;
       }
 
       // We should cancel any existing tasks for this entry. Just let the task
       // drop to cancel it.
       post_process_tasks.0.remove(&PostProcessKey {
-        original_id: *original_id,
-        output_id: *output_id,
+        unprocessed_id: *unprocessed_id,
+        processed_id: *processed_id,
       });
 
       false
     });
 
-    !targets.output_to_action.is_empty()
+    !targets.processed_to_action.is_empty()
   });
 }
 
 /// System that reads events for the unprocessed assets and ensures the
 /// processing starts or is cleared to match the state of the unprocessed asset.
-fn watch_for_changed_original(
+fn watch_for_changed_unprocessed(
   mut scene_events: EventReader<AssetEvent<Scene>>,
   mut intermediate: ResMut<RegisteredPostProcessActions>,
   type_registry: Res<AppTypeRegistry>,
@@ -196,46 +197,53 @@ fn watch_for_changed_original(
   mut post_process_tasks: ResMut<ScenePostProcessTasks>,
 ) {
   let intermediate = intermediate.as_mut();
-  for original_id in scene_events
+  for unprocessed_id in scene_events
     .read()
     .filter_map(asset_event_to_change)
-    .chain(intermediate.new_scenes.drain().map(|original_id| original_id))
+    .chain(intermediate.new_scenes.drain().map(|unprocessed_id| unprocessed_id))
     .collect::<HashSet<_>>()
   {
     let Some(post_process_targets) =
-      intermediate.original_to_targets.get(&original_id)
+      intermediate.unprocessed_to_targets.get(&unprocessed_id)
     else {
       // This is not a scene we care about.
       continue;
     };
 
-    if !scenes.contains(original_id) {
-      for (&output_id, action) in post_process_targets.output_to_action.iter() {
-        // If the original scene is missing, we should also remove the output
-        // scene so they remain consistent.
-        if let Some(strong_handle) = action.output_handle.upgrade() {
+    if !scenes.contains(unprocessed_id) {
+      for (&processed_id, action) in
+        post_process_targets.processed_to_action.iter()
+      {
+        // If the unprocessed scene is missing, we should also remove the
+        // processed scene so they remain consistent.
+        if let Some(strong_handle) = action.processed_handle.upgrade() {
           // If we can upgrade our strong handle, then the scenes Assets may
           // still be holding the handle. Else the asset will have
           // already been cleaned up by the strong handle drop.
           scenes.remove(&Handle::Strong(strong_handle));
         }
         // Just drop the task if it's present to cancel it.
-        post_process_tasks.0.remove(&PostProcessKey { original_id, output_id });
+        post_process_tasks
+          .0
+          .remove(&PostProcessKey { unprocessed_id, processed_id });
       }
       continue;
     }
 
-    let Some(original_scene) =
-      scenes.get(&post_process_targets.original_handle)
+    let Some(unprocessed_scene) =
+      scenes.get(&post_process_targets.unprocessed_handle)
     else {
-      // This could happen if the original scene is loaded and unloaded in the
-      // same frame. I'm not sure this is possible, but it's fine if this
-      // happens anyway.
+      // This could happen if the unprocessed scene is loaded and unloaded in
+      // the same frame. I'm not sure this is possible, but it's fine if
+      // this happens anyway.
       continue;
     };
 
-    for (&output_id, action) in post_process_targets.output_to_action.iter() {
-      let Ok(cloned_scene) = original_scene.clone_with(&type_registry) else {
+    for (&processed_id, action) in
+      post_process_targets.processed_to_action.iter()
+    {
+      let Ok(cloned_scene) = unprocessed_scene.clone_with(&type_registry)
+      else {
         // TODO: Emit an event here to notify of errors.
         continue;
       };
@@ -254,7 +262,7 @@ fn watch_for_changed_original(
       });
       post_process_tasks
         .0
-        .insert(PostProcessKey { original_id, output_id }, task);
+        .insert(PostProcessKey { unprocessed_id, processed_id }, task);
     }
   }
 }
@@ -290,9 +298,9 @@ fn handle_finished_processing(
       block_on(future::poll_once(task)).expect("the task is finished");
 
     let Some(action) = intermediate
-      .original_to_targets
-      .get(&key.original_id)
-      .and_then(|targets| targets.output_to_action.get(&key.output_id))
+      .unprocessed_to_targets
+      .get(&key.unprocessed_id)
+      .and_then(|targets| targets.processed_to_action.get(&key.processed_id))
     else {
       // The conversion must have been deleted, so just ignore this as spurious.
       return false;
@@ -300,7 +308,7 @@ fn handle_finished_processing(
 
     // Only insert the scene if we can upgrade the handle (meaning someone still
     // cares about the processed scene).
-    if let Some(strong_handle) = action.output_handle.upgrade() {
+    if let Some(strong_handle) = action.processed_handle.upgrade() {
       scenes.insert(&Handle::Strong(strong_handle), processed_scene);
     }
 

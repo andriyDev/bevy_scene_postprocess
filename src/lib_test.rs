@@ -72,7 +72,7 @@ fn processes_scene_after_loading() {
   let mut scenes = get_scenes_mut(&mut app);
   expect_that!(scenes.get(&processed_scene), none());
 
-  // Add an empty scene for the original scene.
+  // Add an empty scene for the unprocessed scene.
   scenes.insert(scene_to_process.id(), Scene { world: World::new() });
 
   app.update();
@@ -233,7 +233,7 @@ fn drops_post_process_on_drop_output() {
     app
       .world()
       .resource::<RegisteredPostProcessActions>()
-      .original_to_targets
+      .unprocessed_to_targets
       .len(),
     0
   );
