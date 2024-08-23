@@ -1,9 +1,13 @@
-use std::sync::{Arc, Weak};
+use std::{
+  error::Error,
+  sync::{Arc, Weak},
+};
 
 use bevy::{
   app::{Last, Plugin},
   asset::{AssetEvent, AssetEvents, AssetId, Assets, Handle, StrongHandle},
   ecs::system::SystemParam,
+  log::warn,
   prelude::{
     AppTypeRegistry, EventReader, IntoSystemConfigs, Res, ResMut, Resource,
     SystemSet, World,
@@ -73,7 +77,13 @@ impl<'w> ScenePostProcessor<'w> {
   pub fn process(
     &mut self,
     scene: Handle<Scene>,
-    actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
+    actions: Vec<
+      Arc<
+        dyn Fn(&mut World) -> Result<(), Box<dyn Error + Send + Sync>>
+          + Send
+          + Sync,
+      >,
+    >,
   ) -> Handle<Scene> {
     let processed_handle = self.scenes.reserve_handle();
     let Handle::Strong(processed_strong_handle_arc) = &processed_handle else {
@@ -144,12 +154,20 @@ struct PostProcessAction {
   /// about our asset until we first insert the asset (after we've
   /// post-processed the first time).
   processed_handle: Weak<StrongHandle>,
-  actions: Vec<Arc<dyn Fn(&mut World) + Send + Sync>>,
+  actions: Vec<
+    Arc<
+      dyn Fn(&mut World) -> Result<(), Box<dyn Error + Send + Sync>>
+        + Send
+        + Sync,
+    >,
+  >,
 }
 
 /// The currently running post-processing tasks.
 #[derive(Resource, Default)]
-struct ScenePostProcessTasks(HashMap<PostProcessKey, Task<Scene>>);
+struct ScenePostProcessTasks(
+  HashMap<PostProcessKey, Task<Result<Scene, Box<dyn Error + Send + Sync>>>>,
+);
 
 /// The key for a post-processing task.
 #[derive(Debug, Hash, PartialEq, Eq)]
@@ -253,9 +271,12 @@ fn watch_for_changed_unprocessed(
       let task = task_pool.spawn(async move {
         let mut processed_scene = cloned_scene;
         for action in async_actions {
-          action(&mut processed_scene.world);
+          match action(&mut processed_scene.world) {
+            Err(error) => return Err(error),
+            Ok(()) => {}
+          }
         }
-        processed_scene
+        Ok(processed_scene)
       });
       post_process_tasks
         .0
@@ -293,6 +314,16 @@ fn handle_finished_processing(
 
     let processed_scene =
       block_on(future::poll_once(task)).expect("the task is finished");
+    let processed_scene = match processed_scene {
+      Err(error) => {
+        // Make sure the scene is deleted to ensure we don't hold on to a stale
+        // asset if a hot reload causes a processing failure.
+        scenes.remove(key.processed_id);
+        warn!("Failed to process scene {:?}: {error}", key.unprocessed_id);
+        return false;
+      }
+      Ok(processed_scene) => processed_scene,
+    };
 
     let Some(action) = intermediate
       .unprocessed_to_targets

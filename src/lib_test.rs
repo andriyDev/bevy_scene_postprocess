@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+  error::Error,
+  result::Result,
+  sync::{Arc, Mutex},
+};
 
 use bevy::{ecs::system::RunSystemOnce, prelude::*, scene::ScenePlugin};
 use googletest::prelude::*;
@@ -33,8 +37,12 @@ fn get_post_process_tasks(app: &App) -> usize {
 #[derive(Component)]
 struct ExampleMarker;
 
-fn spawn_entity_with_marker_action(world: &mut World) {
+fn spawn_entity_with_marker_action(
+  world: &mut World,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
   world.spawn(ExampleMarker);
+
+  Ok(())
 }
 
 fn scene_contains_entity_with<T: Component>(scene: &mut Scene) -> bool {
@@ -221,8 +229,12 @@ fn drops_post_process_on_drop_output() {
 #[derive(Component)]
 struct AnotherMarker;
 
-fn spawn_entity_with_another_marker_action(world: &mut World) {
+fn spawn_entity_with_another_marker_action(
+  world: &mut World,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
   world.spawn(AnotherMarker);
+
+  Ok(())
 }
 
 #[googletest::test]
@@ -262,4 +274,82 @@ fn allows_processing_same_scene_multiple_times() {
   expect_true!(scene_contains_entity_with::<AnotherMarker>(
     scenes.get_mut(&processed_scene_2).expect("The scene was processed."),
   ));
+}
+
+#[googletest::test]
+fn error_causes_failed_load() {
+  let mut app = create_app();
+
+  let mut scenes = get_scenes_mut(&mut app);
+  let scene_to_process = scenes.add(Scene { world: World::new() });
+
+  let should_fail = Arc::new(Mutex::new(false));
+
+  let processed_scene = {
+    let should_fail = should_fail.clone();
+
+    let action = Arc::new(
+      move |world: &mut World| -> Result<(), Box<dyn Error + Send + Sync>> {
+        if *should_fail.lock().unwrap() {
+          return Err("Some message".into());
+        }
+
+        spawn_entity_with_marker_action(world)
+      },
+    );
+
+    let scene_to_process = scene_to_process.clone();
+
+    app.world_mut().run_system_once(
+      move |mut post_processor: ScenePostProcessor| {
+        post_processor.process(scene_to_process.clone(), vec![action.clone()])
+      },
+    )
+  };
+
+  // Start processing.
+  app.update();
+  // Finish processing.
+  app.update();
+
+  expect_eq!(get_post_process_tasks(&app), 0);
+  let scenes = get_scenes(&mut app);
+  // The scene was processed successfully.
+  expect_that!(scenes.get(&processed_scene), some(anything()));
+
+  // Reprocessing the asset now will fail.
+  *should_fail.lock().unwrap() = true;
+
+  let mut scenes = get_scenes_mut(&mut app);
+  // Get the scene mutably to trigger a modified asset event to trigger
+  // reprocessing.
+  let _ = scenes.get_mut(&scene_to_process);
+
+  // Start processing.
+  app.update();
+  // Finish processing.
+  app.update();
+
+  expect_eq!(get_post_process_tasks(&app), 0);
+  let scenes = get_scenes(&mut app);
+  // The stale scene was deleted because the new scene failed to be processed.
+  expect_that!(scenes.get(&processed_scene), none());
+
+  // Reprocessing the asset now will pass.
+  *should_fail.lock().unwrap() = false;
+
+  let mut scenes = get_scenes_mut(&mut app);
+  // Get the scene mutably to trigger a modified asset event to trigger
+  // reprocessing.
+  let _ = scenes.get_mut(&scene_to_process);
+
+  // Start processing.
+  app.update();
+  // Finish processing.
+  app.update();
+
+  expect_eq!(get_post_process_tasks(&app), 0);
+  let scenes = get_scenes(&mut app);
+  // The scene was reprocessed successfully!
+  expect_that!(scenes.get(&processed_scene), some(anything()));
 }
