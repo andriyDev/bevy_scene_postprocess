@@ -3,7 +3,10 @@ use std::{
   sync::{Arc, Mutex},
 };
 
-use bevy::{ecs::system::RunSystemOnce, prelude::*, scene::ScenePlugin};
+use bevy::{
+  ecs::system::RunSystemOnce, prelude::*, scene::ScenePlugin,
+  tasks::AsyncComputeTaskPool,
+};
 use googletest::prelude::*;
 
 use crate::{
@@ -33,6 +36,33 @@ fn get_post_process_tasks(app: &App) -> usize {
   app.world().resource::<ScenePostProcessTasks>().0.len()
 }
 
+fn wait_for_tasks_to_finish(app: &App) {
+  let task_pool = AsyncComputeTaskPool::get();
+
+  let app_has_unfinished_tasks = || {
+    app
+      .world()
+      .resource::<ScenePostProcessTasks>()
+      .0
+      .iter()
+      .any(|(_, task)| !task.is_finished())
+  };
+
+  while app_has_unfinished_tasks() {
+    task_pool.with_local_executor(|exec| {
+      exec.try_tick();
+    });
+  }
+}
+
+fn finish_processing_tasks(app: &mut App) {
+  // Start processing.
+  app.update();
+  wait_for_tasks_to_finish(app);
+  // Finish processing.
+  app.update();
+}
+
 #[derive(Component)]
 struct ExampleMarker;
 
@@ -56,13 +86,22 @@ fn processes_scene_after_loading() {
 
   let scene_to_process = get_scenes(&app).reserve_handle();
 
+  let (sender, receiver) = crossbeam_channel::bounded::<()>(1);
+  // Arc the receiver so we can clone it into each closure.
+  let receiver = Arc::new(receiver);
+
   let processed_scene = {
     let scene_to_process = scene_to_process.clone();
     app.world_mut().run_system_once(
       move |mut post_processor: ScenePostProcessor| {
+        let receiver = receiver.clone();
         post_processor.process(
           scene_to_process.clone(),
-          vec![Arc::new(spawn_entity_with_marker_action)],
+          vec![Arc::new(move |world: &mut World| {
+            receiver.recv().unwrap();
+
+            spawn_entity_with_marker_action(world)
+          })],
         )
       },
     )
@@ -70,7 +109,8 @@ fn processes_scene_after_loading() {
 
   app.update();
 
-  // The processed scene hasn't been added yet.
+  // The processed scene hasn't been added yet, since the unprocessed scene
+  // hasn't been loaded.
   let mut scenes = get_scenes_mut(&mut app);
   expect_that!(scenes.get(&processed_scene), none());
 
@@ -86,6 +126,8 @@ fn processes_scene_after_loading() {
   // There is a task to be processed.
   expect_eq!(get_post_process_tasks(&app), 1);
 
+  // Let the task finish processing.
+  sender.send(()).unwrap();
   app.update();
 
   let mut scenes = get_scenes_mut(&mut app);
@@ -104,12 +146,12 @@ fn processes_loaded_scene_immediately() {
   let mut scenes = get_scenes_mut(&mut app);
   let scene_to_process = scenes.add(Scene { world: World::new() });
 
-  // Update thrice to make sure all the events are dropped so we don't get saved
-  // by a "race condition".
+  // Update so the events are processed by the scene processor (even though they
+  // will just be ignored).
   app.update();
-  app.update();
-  app.update();
-  assert_eq!(app.world().resource::<Events<AssetEvent<Scene>>>().len(), 0);
+  // Clear out the events to make sure these events can't affect processing.
+  // This is not necessary but it makes it clear the events aren't related here.
+  app.world_mut().resource_mut::<Events<AssetEvent<Scene>>>().clear();
 
   let processed_scene = app.world_mut().run_system_once(
     move |mut post_processor: ScenePostProcessor| {
@@ -120,10 +162,7 @@ fn processes_loaded_scene_immediately() {
     },
   );
 
-  // Let the processor "see" the new processed scene.
-  app.update();
-  // Let the processor handle the finished processing.
-  app.update();
+  finish_processing_tasks(&mut app);
 
   let mut scenes = get_scenes_mut(&mut app);
   let processed_scene = scenes
@@ -154,10 +193,7 @@ fn drops_processed_scene_if_unprocessed_is_dropped() {
     )
   };
 
-  // Start processing.
-  app.update();
-  // Finish processing.
-  app.update();
+  finish_processing_tasks(&mut app);
 
   let mut scenes = get_scenes_mut(&mut app);
   expect_that!(scenes.get(&processed_scene), some(anything()));
@@ -179,28 +215,37 @@ fn multiple_asset_events_only_results_in_one_change() {
   let mut scenes = get_scenes_mut(&mut app);
   let scene_to_process = scenes.add(Scene { world: World::new() });
 
+  let (sender, receiver) = crossbeam_channel::bounded::<()>(1);
+  // Arc the receiver so we can clone it into each closure.
+  let receiver = Arc::new(receiver);
+
   // Keep the scene alive even though we don't use it any longer.
   let _processed_scene = {
     let scene_to_process = scene_to_process.clone();
     app.world_mut().run_system_once(
       move |mut post_processor: ScenePostProcessor| {
+        let receiver = receiver.clone();
         post_processor.process(
           scene_to_process.clone(),
-          vec![Arc::new(spawn_entity_with_marker_action)],
+          vec![Arc::new(move |_: &mut World| {
+            receiver.recv().unwrap();
+            Ok(())
+          })],
         )
       },
     )
   };
 
-  // Update to process the scene.
+  // Tell the task it is allowed to finish.
+  sender.send(()).unwrap();
+  finish_processing_tasks(&mut app);
+  // Update once more to flush the internal asset events from inserting the
+  // processed asset.
   app.update();
-  // Let the processor finish processing.
-  app.update();
-  // Update thrice more to clear out all the events.
-  app.update();
-  app.update();
-  app.update();
-  assert_eq!(app.world().resource::<Events<AssetEvent<Scene>>>().len(), 0);
+
+  // Clear out the events to make sure these events can't affect processing.
+  // This is not necessary but it makes it clear the events aren't related here.
+  app.world_mut().resource_mut::<Events<AssetEvent<Scene>>>().clear();
 
   let mut scenes = get_scenes_mut(&mut app);
   let scene = scenes.remove(&scene_to_process).unwrap();
@@ -210,13 +255,21 @@ fn multiple_asset_events_only_results_in_one_change() {
 
   app.update();
 
-  // There were 4 asset events.
-  expect_eq!(app.world().resource::<Events<AssetEvent<Scene>>>().len(), 4);
-  // ... but there was only one task created.
-  expect_eq!(get_post_process_tasks(&app), 1);
+  // There were 4 asset events from changes to the scene.
+  let mut events = app.world_mut().resource_mut::<Events<AssetEvent<Scene>>>();
+  expect_eq!(events.len(), 4);
+  // Clear out the events so we don't double count them.
+  events.clear();
+  assert_eq!(get_post_process_tasks(&app), 1);
+
+  // Tell the task it is allowed to finish.
+  sender.send(()).unwrap();
 
   // Update again to hopefully clear out the task pool.
-  app.update();
+  finish_processing_tasks(&mut app);
+
+  // There was one event from the processed scene loading.
+  expect_eq!(app.world().resource::<Events<AssetEvent<Scene>>>().len(), 1);
 }
 
 #[googletest::test]
@@ -238,19 +291,18 @@ fn drops_post_process_on_drop_output() {
     )
   };
 
-  // Update to process the scene.
-  app.update();
-  // Let the processor finish processing.
-  app.update();
+  finish_processing_tasks(&mut app);
 
   drop(processed_scene);
 
+  // Update once to handle dropping the processed scene.
   app.update();
+  // Update again so the asset system handles the dropped unprocessed scene.
   app.update();
 
   let scenes = get_scenes(&mut app);
   // All the scenes were dropped.
-  expect_eq!(scenes.len(), 0);
+  expect_eq!(scenes.len(), 0, "{:?}", scenes.ids().collect::<Vec<_>>());
   expect_eq!(
     app
       .world()
@@ -298,10 +350,7 @@ fn allows_processing_same_scene_multiple_times() {
     )
   };
 
-  // Update to process the scenes.
-  app.update();
-  // Let the processor finish processing.
-  app.update();
+  finish_processing_tasks(&mut app);
 
   let mut scenes = get_scenes_mut(&mut app);
   expect_true!(scene_contains_entity_with::<ExampleMarker>(
@@ -341,10 +390,7 @@ fn error_causes_failed_load() {
     )
   };
 
-  // Start processing.
-  app.update();
-  // Finish processing.
-  app.update();
+  finish_processing_tasks(&mut app);
 
   expect_eq!(get_post_process_tasks(&app), 0);
   let scenes = get_scenes(&mut app);
@@ -359,10 +405,7 @@ fn error_causes_failed_load() {
   // reprocessing.
   let _ = scenes.get_mut(&scene_to_process);
 
-  // Start processing.
-  app.update();
-  // Finish processing.
-  app.update();
+  finish_processing_tasks(&mut app);
 
   expect_eq!(get_post_process_tasks(&app), 0);
   let scenes = get_scenes(&mut app);
@@ -377,10 +420,7 @@ fn error_causes_failed_load() {
   // reprocessing.
   let _ = scenes.get_mut(&scene_to_process);
 
-  // Start processing.
-  app.update();
-  // Finish processing.
-  app.update();
+  finish_processing_tasks(&mut app);
 
   expect_eq!(get_post_process_tasks(&app), 0);
   let scenes = get_scenes(&mut app);
@@ -415,10 +455,7 @@ fn failed_to_clone_scene_removes_all_processed_scenes() {
     )
   };
 
-  // Start processing.
-  app.update();
-  // Finish processing.
-  app.update();
+  finish_processing_tasks(&mut app);
 
   expect_eq!(get_post_process_tasks(&app), 0);
   let scenes = get_scenes(&mut app);
