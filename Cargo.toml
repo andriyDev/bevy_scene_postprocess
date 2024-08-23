@@ -3,6 +3,8 @@ name = "bevy_scene_postprocess"
 version = "0.1.0"
 edition = "2021"
 
+readme = "README.md"
+
 [dependencies]
 bevy = { version = "0.14.1", default-features = false, features = [
   "bevy_scene",
