@@ -1,6 +1,6 @@
 [package]
 name = "bevy_scene_postprocess"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 edition = "2021"
 
 description = "A crate for Bevy that provides a way to postprocess scenes after loading them"
