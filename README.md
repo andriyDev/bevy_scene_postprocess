@@ -90,10 +90,7 @@ fn register_post_process(
     })
   ]);
 
-  commands.spawn(SceneBundle {
-    scene: processed_scene,
-    ..Default::default()
-  });
+  commands.spawn(SceneRoot(processed_scene));
 }
 
 #[derive(Resource)]

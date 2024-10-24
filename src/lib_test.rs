@@ -92,8 +92,9 @@ fn processes_scene_after_loading() {
 
   let processed_scene = {
     let scene_to_process = scene_to_process.clone();
-    app.world_mut().run_system_once(
-      move |mut post_processor: ScenePostProcessor| {
+    app
+      .world_mut()
+      .run_system_once(move |mut post_processor: ScenePostProcessor| {
         let receiver = receiver.clone();
         post_processor.process(
           scene_to_process.clone(),
@@ -103,8 +104,8 @@ fn processes_scene_after_loading() {
             spawn_entity_with_marker_action(world)
           })],
         )
-      },
-    )
+      })
+      .unwrap()
   };
 
   app.update();
@@ -153,14 +154,15 @@ fn processes_loaded_scene_immediately() {
   // This is not necessary but it makes it clear the events aren't related here.
   app.world_mut().resource_mut::<Events<AssetEvent<Scene>>>().clear();
 
-  let processed_scene = app.world_mut().run_system_once(
-    move |mut post_processor: ScenePostProcessor| {
+  let processed_scene = app
+    .world_mut()
+    .run_system_once(move |mut post_processor: ScenePostProcessor| {
       post_processor.process(
         scene_to_process.clone(),
         vec![Arc::new(spawn_entity_with_marker_action)],
       )
-    },
-  );
+    })
+    .unwrap();
 
   finish_processing_tasks(&mut app);
 
@@ -183,14 +185,15 @@ fn drops_processed_scene_if_unprocessed_is_dropped() {
 
   let processed_scene = {
     let scene_to_process = scene_to_process.clone();
-    app.world_mut().run_system_once(
-      move |mut post_processor: ScenePostProcessor| {
+    app
+      .world_mut()
+      .run_system_once(move |mut post_processor: ScenePostProcessor| {
         post_processor.process(
           scene_to_process.clone(),
           vec![Arc::new(spawn_entity_with_marker_action)],
         )
-      },
-    )
+      })
+      .unwrap()
   };
 
   finish_processing_tasks(&mut app);
@@ -335,8 +338,9 @@ fn allows_processing_same_scene_multiple_times() {
 
   let (processed_scene_1, processed_scene_2) = {
     let scene_to_process = scene_to_process.clone();
-    app.world_mut().run_system_once(
-      move |mut post_processor: ScenePostProcessor| {
+    app
+      .world_mut()
+      .run_system_once(move |mut post_processor: ScenePostProcessor| {
         let processed_scene_1 = post_processor.process(
           scene_to_process.clone(),
           vec![Arc::new(spawn_entity_with_marker_action)],
@@ -346,8 +350,8 @@ fn allows_processing_same_scene_multiple_times() {
           vec![Arc::new(spawn_entity_with_another_marker_action)],
         );
         (processed_scene_1, processed_scene_2)
-      },
-    )
+      })
+      .unwrap()
   };
 
   finish_processing_tasks(&mut app);
@@ -383,11 +387,12 @@ fn error_causes_failed_load() {
 
     let scene_to_process = scene_to_process.clone();
 
-    app.world_mut().run_system_once(
-      move |mut post_processor: ScenePostProcessor| {
+    app
+      .world_mut()
+      .run_system_once(move |mut post_processor: ScenePostProcessor| {
         post_processor.process(scene_to_process.clone(), vec![action.clone()])
-      },
-    )
+      })
+      .unwrap()
   };
 
   finish_processing_tasks(&mut app);
@@ -440,8 +445,9 @@ fn failed_to_clone_scene_removes_all_processed_scenes() {
 
   let (processed_scene_1, processed_scene_2) = {
     let scene_to_process = scene_to_process.clone();
-    app.world_mut().run_system_once(
-      move |mut post_processor: ScenePostProcessor| {
+    app
+      .world_mut()
+      .run_system_once(move |mut post_processor: ScenePostProcessor| {
         let processed_scene_1 = post_processor.process(
           scene_to_process.clone(),
           vec![Arc::new(spawn_entity_with_marker_action)],
@@ -451,8 +457,8 @@ fn failed_to_clone_scene_removes_all_processed_scenes() {
           vec![Arc::new(spawn_entity_with_another_marker_action)],
         );
         (processed_scene_1, processed_scene_2)
-      },
-    )
+      })
+      .unwrap()
   };
 
   finish_processing_tasks(&mut app);
