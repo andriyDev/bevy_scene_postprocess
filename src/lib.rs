@@ -61,7 +61,7 @@ pub struct ScenePostProcessor<'w> {
   scenes: Res<'w, Assets<Scene>>,
 }
 
-impl<'w> ScenePostProcessor<'w> {
+impl ScenePostProcessor<'_> {
   /// Registers a post-processing action on `scene`, which will apply the
   /// `actions` in order. Actions are given a copy of the world contained within
   /// `scene` and can mutate that scene in any way they want.
